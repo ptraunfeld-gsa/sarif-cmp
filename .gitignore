@@ -1,6 +1,16 @@
 scratch.txt
-reports/
+archive/
+reports/*.csv
+sarif_files/*.sarif
+sarif_files/*.json
+fod_xml_files/*.xml
+FoD_Checkmarx_Reconciliation.ipynb
+
 venv/
+**/*.csv
+**/*.txt
+!requirements.txt
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

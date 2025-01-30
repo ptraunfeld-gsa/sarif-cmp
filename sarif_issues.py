@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import re
 import pandas as pd
 from pandas import DataFrame
+import sys
 
 level_to_severity = { 'note' : 'MEDIUM', 'warning' : 'HIGH', 'error': 'CRITICAL' }
 
@@ -79,26 +80,26 @@ def sarif_to_rule_map(rules: list[dict]) -> dict[str, set[str]]:
 
     return rule_map
 
+TOOL = "tool"
+RULE_ID = "ruleId"
+DESC = "description"
+FILENAME = "filename"
+LINE = "startLine"
+SEVERITY = 'severity'
+IN_TOP_25 = "inCWETop25"
+CWES = "CWEs"
+
+COLUMNS = [
+    TOOL,
+    RULE_ID,
+    DESC,
+    FILENAME,
+    SEVERITY,
+    IN_TOP_25,
+    CWES
+]
 
 def sarif_to_df(file_path: Path) -> DataFrame:
-    TOOL = "tool"
-    RULE_ID = "ruleId"
-    DESC = "description"
-    FILENAME = "filename"
-    LINE = "startLine"
-    SEVERITY = 'severity'
-    HAS_TOP_25 = "hasCWETop25"
-    CWES = "CWEs"
-
-    COLUMNS = [
-        TOOL,
-        RULE_ID,
-        DESC,
-        FILENAME,
-        SEVERITY,
-        HAS_TOP_25,
-        CWES
-    ]
     with open(file_path, 'r') as f:
         sarif_data = json.load(f)
 
@@ -134,7 +135,7 @@ def sarif_to_df(file_path: Path) -> DataFrame:
         if 'rules' in sarif_data['runs'][0]['tool']['driver'].keys():
             rule_map = sarif_to_rule_map(sarif_data['runs'][0]['tool']['driver']['rules'])
         
-            sarif_df[HAS_TOP_25] = sarif_df[RULE_ID].apply(lambda rule_id: has_cwe_top_25(rule_map.get(rule_id)))
+            sarif_df[IN_TOP_25] = sarif_df[RULE_ID].apply(lambda rule_id: has_cwe_top_25(rule_map.get(rule_id)))
             sarif_df[CWES] = sarif_df[RULE_ID].apply(lambda rule_id: ",".join(rule_map.get(rule_id, "")))
 
     else:
@@ -154,7 +155,10 @@ class Metrics:
     num_top_25: int
     num_unique_cwes: int
 
-def print_sarif_metrics(sarif_file: Path):
+def get_unique_cwes(df: DataFrame) -> set[str]:
+    return set(",".join(filter(lambda x: x is not None and len(x) > 0, list(df['CWEs'].unique()))).split(","))
+
+def print_sarif_metrics(sarif_file: Path, verbose=True):
     with open(sarif_file, 'r') as f:
         sarif_data = json.load(f)
 
@@ -162,58 +166,54 @@ def print_sarif_metrics(sarif_file: Path):
     sarif_df = sarif_to_df(sarif_file)
     total_issues = len(sarif_df)
     tool = sarif_df['tool'].unique()[0]
-    num_critical = len(sarif_df[ sarif_df['severity'] == "CRITICAL" ])
-    num_high = len(sarif_df[ sarif_df['severity'] == "HIGH" ])
-    num_medium = len(sarif_df[ sarif_df['severity'] == "MEDIUM" ])
-    num_low = len(sarif_df[ sarif_df['severity'] == "LOW" ])
-    num_top_25 = len(sarif_df[ sarif_df['hasCWETop25'] == True ])
-    unique_cwes = set(",".join(list(sarif_df['CWEs'].unique())).split(","))
+    num_critical = len(sarif_df[ sarif_df[SEVERITY] == "CRITICAL" ])
+    num_high = len(sarif_df[ sarif_df[SEVERITY] == "HIGH" ])
+    num_medium = len(sarif_df[ sarif_df[SEVERITY] == "MEDIUM" ])
+    num_low = len(sarif_df[ sarif_df[SEVERITY] == "LOW" ])
+    num_top_25 = len(sarif_df[ sarif_df[IN_TOP_25] == True ])
+
+    unique_cwes = get_unique_cwes(sarif_df)
     num_unique_cwes = len(unique_cwes)
 
-    row = f"Tool^TotalIssues^Critical^High^Medium^Low^Top25^UniqueCWEs\n{tool}^{total_issues}^{num_critical}^{num_high}^{num_medium}^{num_low}^{num_top_25}^{num_unique_cwes}"
-    print(row)
+    num_unique_files = len(sarif_df['filename'].unique())
+
+    columns = [
+        "Tool",
+        "TotalIssues",
+        "Critical",
+        "High",
+        "Medium",
+        "Low",
+        "Top25",
+        "UniqueCWEs",
+        "UniqueFiles"
+    ]
+    data = [ str(c) for c in (
+        tool,
+        total_issues,
+        num_critical,
+        num_high,
+        num_medium,
+        num_low,
+        num_top_25,
+        num_unique_cwes,
+        num_unique_files
+    ) ]
+
+    if verbose:
+        columns.append("CWEs")
+        data.append(",".join(unique_cwes))
+
+    header_row = "^".join(columns)
+    data_row = "^".join(data)
+
+    print(f"{header_row}\n{data_row}")
     
-
-def to_csv(sarif_file: Path):
-    with open(sarif_file, 'r') as sf:
-        sarif_obj = json.load(sf)
-
-    # findings = []
-    for result in sarif_obj['runs'][0]['results']:
-        rule_id = result['ruleId']
-        description = result['message']['text']
-        phys_loc = result['locations'][0]['physicalLocation']
-        filename = phys_loc['artifactLocation']['uri']
-
-        if 'region' in phys_loc.keys():
-            line_num = phys_loc['region']['startLine']
-        else:
-            line_num = "1"
-
-        
-        if 'properties' in result.keys():
-            if 'fortify-severity' in result['properties'].keys():
-                severity = result['properties']['fortify-severity'].upper()
-            elif 'issue_severity' in result['properties'].keys():
-                severity = result['properties']['issue_severity'].upper()
-            else:
-                severity="UNKNOWN"
-            
-        elif 'level' in result.keys() and result['level'] in level_to_severity.keys():
-            severity = level_to_severity[result['level']]
-        else:
-            confidence = " "
-            # Get severity from ruleId suffix
-            m = re.search("(CRITICAL|HIGH|MEDIUM|LOW)$", rule_id, re.IGNORECASE)
-            if m is not None:
-                severity = m.group(0)
-            else:
-                severity = 'UNKNOWN'
-
-
-        print("^".join([rule_id, description, filename, str(line_num), severity]))
-        # findings.append(Finding(rule_id, description, filename, line_num, severity, confidence))
-
+def sarif_to_csv(sarif_file: Path):
+    with open(sarif_file, 'r') as f:
+        sarif_data = json.load(f)
+    sarif_df = sarif_to_df(sarif_file)
+    sarif_df.to_csv(path_or_buf = sys.stdout, sep = '^', index=False)
 
 if __name__ == "__main__":
     import sys
@@ -227,6 +227,6 @@ if __name__ == "__main__":
         print(f"File {sys.argv[1]} does not exist")
         sys.exit(1)
 
-    # to_csv(sarif_file)
-    print_sarif_metrics(sarif_file)
+    # print_sarif_metrics(sarif_file)
+    sarif_to_csv(sarif_file)
 
