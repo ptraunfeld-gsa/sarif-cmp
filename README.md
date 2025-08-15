@@ -2,8 +2,8 @@
 
 ## Setup
  - Create a virtual environment called "venv": `python -m venv venv`
- - Activate it by running  `. ./venv/Scripts/activate` or `. ./venv/bin/activate` 
- - Install dependencies: `python -m pip install -r requirements.txt`
+ - Activate it by running  `. ./venv/Scripts/activate` or `. ./venv/bin/activate`
+ - Run `python -m pip install pandas` 
 
 ## Generate Reports
  - Put sarif files in the `sarif_files/` directory
