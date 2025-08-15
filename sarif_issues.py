@@ -5,6 +5,7 @@ import re
 import pandas as pd
 from pandas import DataFrame
 import sys
+import logging
 
 level_to_severity = { 'note' : 'MEDIUM', 'warning' : 'HIGH', 'error': 'CRITICAL' }
 
@@ -48,14 +49,15 @@ def sarif_to_rule_map(rules: list[dict]) -> dict[str, set[str]]:
     rule_map = {}
     for rule in rules:
         
+        rule_id = rule['id']
+        
         # Bandit
-        id = rule['id']
-        rule_map[id] = set()
+        rule_map[rule_id] = set()
         if 'properties' in rule.keys() and 'tags' in rule['properties'].keys():
             for tag in rule['properties']['tags']:
                 m = cwe_pattern.search(tag)
                 if m:
-                    rule_map[id].add(m.group(0).upper())
+                    rule_map[rule_id].add(m.group(0).upper())
 
         
         # SpotBugs
@@ -63,7 +65,7 @@ def sarif_to_rule_map(rules: list[dict]) -> dict[str, set[str]]:
             for rel in rule['relationships']:
                 rel_id = rel['target']['id']
                 if rel['target']['toolComponent']['name'] == "CWE":
-                    rule_map[id].add(f"CWE-{rel_id}")
+                    rule_map[rule_id].add(f"CWE-{rel_id}")
 
 
         # Fortify
@@ -71,11 +73,16 @@ def sarif_to_rule_map(rules: list[dict]) -> dict[str, set[str]]:
             help_text = rule['help']['text']
             m = cwe_id_pattern.findall(help_text)
             if m is not None and len(m) > 0:
-                rule_map[id].update([f"CWE-{int(cwe)}" for cwe in m])
+                rule_map[rule_id].update([f"CWE-{int(cwe)}" for cwe in m])
 
 
-        if len(rule_map[id]) < 1:
-            del rule_map[id]
+        # Snyk
+        if 'properties' in rule.keys() and "cwe" in rule['properties'] and len(rule['properties']['cwe']) > 0:
+            rule_map[rule_id].update(rule['properties']['cwe'])
+
+
+        if len(rule_map[rule_id]) < 1:
+            del rule_map[rule_id]
 
 
     return rule_map
@@ -100,46 +107,61 @@ COLUMNS = [
 ]
 
 def sarif_to_df(file_path: Path) -> DataFrame:
-    with open(file_path, 'r') as f:
+    with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
         sarif_data = json.load(f)
 
     if 'runs' not in sarif_data.keys() or len(sarif_data['runs']) < 1:
         print("Bad Sarif")
         sys.exit(1)
+    try:
+        sarif_df = pd.json_normalize(sarif_data['runs'][0]['results'])
+        if len(sarif_df) > 0:
+            sarif_df[FILENAME] = sarif_df['locations'].apply(lambda locs: locs[0]['physicalLocation']['artifactLocation']['uri'])
+            # sarif_df[LINE] = sarif_df['locations'].apply(lambda locs: locs[0]['physicalLocation']['region']['startLine'])
+            # sarif_df['endLine'] = sarif_df['locations'].apply(lambda locs: locs[0]['physicalLocation']['region']['endLine'])
+            # sarif_df['startColumn'] = sarif_df['locations'].apply(lambda locs: locs[0]['physicalLocation']['region']['startColumn'])
+            # sarif_df['endColumn'] = sarif_df['locations'].apply(lambda locs: locs[0]['physicalLocation']['region']['endColumn'])
+            sarif_df[DESC] = sarif_df['message.text']
+            # sarif_df['severity'] = sarif_df['properties'].apply(lambda props: get_severity(props))
+            if 'properties.issue_severity' in sarif_df.columns:
+                # sarif_df['severity'] = sarif_df['properties.issue_severity']
+                sarif_df.rename(columns={'properties.issue_severity': SEVERITY}, inplace=True)
+            elif 'properties.fortify-severity' in sarif_df.columns:
+                # sarif_df['severity'] = sarif_df['properties.fortify-severity']
+                sarif_df.rename(columns={'properties.fortify-severity': SEVERITY}, inplace=True)
 
-    sarif_df = pd.json_normalize(sarif_data['runs'][0]['results'])
-    sarif_df[FILENAME] = sarif_df['locations'].apply(lambda locs: locs[0]['physicalLocation']['artifactLocation']['uri'])
-    # sarif_df[LINE] = sarif_df['locations'].apply(lambda locs: locs[0]['physicalLocation']['region']['startLine'])
-    # sarif_df['endLine'] = sarif_df['locations'].apply(lambda locs: locs[0]['physicalLocation']['region']['endLine'])
-    # sarif_df['startColumn'] = sarif_df['locations'].apply(lambda locs: locs[0]['physicalLocation']['region']['startColumn'])
-    # sarif_df['endColumn'] = sarif_df['locations'].apply(lambda locs: locs[0]['physicalLocation']['region']['endColumn'])
-    sarif_df[DESC] = sarif_df['message.text']
-    # sarif_df['severity'] = sarif_df['properties'].apply(lambda props: get_severity(props))
-    if 'properties.issue_severity' in sarif_df.columns:
-        # sarif_df['severity'] = sarif_df['properties.issue_severity']
-        sarif_df.rename(columns={'properties.issue_severity': SEVERITY}, inplace=True)
-    elif 'properties.fortify-severity' in sarif_df.columns:
-        # sarif_df['severity'] = sarif_df['properties.fortify-severity']
-        sarif_df.rename(columns={'properties.fortify-severity': SEVERITY}, inplace=True)
+            elif 'level' in sarif_df.columns:
+                sarif_df[SEVERITY] = sarif_df['level'].apply(lambda level: level_to_severity[level])
 
-    elif 'level' in sarif_df.columns:
-        sarif_df[SEVERITY] = sarif_df['level'].apply(lambda level: level_to_severity[level])
+            sarif_df[SEVERITY] = sarif_df[SEVERITY].apply(lambda sev: sev.upper())
+        else:
+            sarif_df[FILENAME] = ""
+            sarif_df[DESC] = ""
+            sarif_df[SEVERITY] = ""
 
-    sarif_df[SEVERITY] = sarif_df[SEVERITY].apply(lambda sev: sev.upper())
-
+    except Exception:
+        logging.exception(f"FILE: {file_path.name}\n----\n", exc_info=True)
+        return
 
     if 'tool' in sarif_data['runs'][0].keys() and 'driver' in sarif_data['runs'][0]['tool'].keys():
         if 'name' in sarif_data['runs'][0]['tool']['driver'].keys():
-            sarif_df = sarif_df.assign(tool=f"{sarif_data['runs'][0]['tool']['driver']['name']}")
+            if len(sarif_data['runs'][0]['results']) == 0:
+                sarif_df[TOOL] = [f"{sarif_data['runs'][0]['tool']['driver']['name']}"]
+            else:
+                sarif_df = sarif_df.assign(tool=f"{sarif_data['runs'][0]['tool']['driver']['name']}")
 
-        if 'rules' in sarif_data['runs'][0]['tool']['driver'].keys():
+
+        if 'rules' in sarif_data['runs'][0]['tool']['driver'].keys() and sarif_data['runs'][0]['tool']['driver']['rules']:
             rule_map = sarif_to_rule_map(sarif_data['runs'][0]['tool']['driver']['rules'])
         
             sarif_df[IN_TOP_25] = sarif_df[RULE_ID].apply(lambda rule_id: has_cwe_top_25(rule_map.get(rule_id)))
             sarif_df[CWES] = sarif_df[RULE_ID].apply(lambda rule_id: ",".join(rule_map.get(rule_id, "")))
-
     else:
-        print("No rules!")
+        print("No tools, no rules!")
+
+    for col in COLUMNS:
+        if col not in sarif_df:
+            sarif_df[col] = ""
 
     return sarif_df[COLUMNS].copy()
     
@@ -156,61 +178,59 @@ class Metrics:
     num_unique_cwes: int
 
 def get_unique_cwes(df: DataFrame) -> set[str]:
-    return set(",".join(filter(lambda x: x is not None and len(x) > 0, list(df['CWEs'].unique()))).split(","))
+    cwe_list = ",".join(filter(lambda x: x is not None and len(x) > 0, list(df['CWEs'].unique()))).split(",")
+    return set([cwe for cwe in cwe_list if cwe != '' and cwe is not None])
 
-def print_sarif_metrics(sarif_file: Path, verbose=True):
-    with open(sarif_file, 'r') as f:
-        sarif_data = json.load(f)
+# def print_sarif_metrics(sarif_file: Path, verbose=True):
 
+#     sarif_df = sarif_to_df(sarif_file)
+#     total_issues = len(sarif_df)
+#     tool = sarif_df['tool'].unique()[0]
+#     num_critical = len(sarif_df[ sarif_df[SEVERITY] == "CRITICAL" ])
+#     num_high = len(sarif_df[ sarif_df[SEVERITY] == "HIGH" ])
+#     num_medium = len(sarif_df[ sarif_df[SEVERITY] == "MEDIUM" ])
+#     num_low = len(sarif_df[ sarif_df[SEVERITY] == "LOW" ])
+#     num_top_25 = len(sarif_df[ sarif_df[IN_TOP_25] == True ])
 
-    sarif_df = sarif_to_df(sarif_file)
-    total_issues = len(sarif_df)
-    tool = sarif_df['tool'].unique()[0]
-    num_critical = len(sarif_df[ sarif_df[SEVERITY] == "CRITICAL" ])
-    num_high = len(sarif_df[ sarif_df[SEVERITY] == "HIGH" ])
-    num_medium = len(sarif_df[ sarif_df[SEVERITY] == "MEDIUM" ])
-    num_low = len(sarif_df[ sarif_df[SEVERITY] == "LOW" ])
-    num_top_25 = len(sarif_df[ sarif_df[IN_TOP_25] == True ])
+#     unique_cwes = get_unique_cwes(sarif_df)
+#     num_unique_cwes = len(unique_cwes)
 
-    unique_cwes = get_unique_cwes(sarif_df)
-    num_unique_cwes = len(unique_cwes)
+#     num_unique_files = len(sarif_df['filename'].unique())
 
-    num_unique_files = len(sarif_df['filename'].unique())
+#     columns = [
+#         "Tool",
+#         "TotalIssues",
+#         "Critical",
+#         "High",
+#         "Medium",
+#         "Low",
+#         "Top25",
+#         "UniqueCWEs",
+#         "UniqueFiles"
+#     ]
+#     data = [ str(c) for c in (
+#         tool,
+#         total_issues,
+#         num_critical,
+#         num_high,
+#         num_medium,
+#         num_low,
+#         num_top_25,
+#         num_unique_cwes,
+#         num_unique_files
+#     ) ]
 
-    columns = [
-        "Tool",
-        "TotalIssues",
-        "Critical",
-        "High",
-        "Medium",
-        "Low",
-        "Top25",
-        "UniqueCWEs",
-        "UniqueFiles"
-    ]
-    data = [ str(c) for c in (
-        tool,
-        total_issues,
-        num_critical,
-        num_high,
-        num_medium,
-        num_low,
-        num_top_25,
-        num_unique_cwes,
-        num_unique_files
-    ) ]
+#     if verbose:
+#         columns.append("CWEs")
+#         data.append(",".join(unique_cwes))
 
-    if verbose:
-        columns.append("CWEs")
-        data.append(",".join(unique_cwes))
+#     header_row = "^".join(columns)
+#     data_row = "^".join(data)
 
-    header_row = "^".join(columns)
-    data_row = "^".join(data)
-
-    print(f"{header_row}\n{data_row}")
+#     print(f"{header_row}\n{data_row}")
     
 def sarif_to_csv(sarif_file: Path):
-    with open(sarif_file, 'r') as f:
+    with open(sarif_file, 'r', encoding='utf-8', errors='ignore') as f:
         sarif_data = json.load(f)
     sarif_df = sarif_to_df(sarif_file)
     sarif_df.to_csv(path_or_buf = sys.stdout, sep = '^', index=False)
