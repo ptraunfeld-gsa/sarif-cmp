@@ -155,7 +155,7 @@ def sarif_to_df(file_path: Path) -> DataFrame:
             rule_map = sarif_to_rule_map(sarif_data['runs'][0]['tool']['driver']['rules'])
         
             sarif_df[IN_TOP_25] = sarif_df[RULE_ID].apply(lambda rule_id: has_cwe_top_25(rule_map.get(rule_id)))
-            sarif_df[CWES] = sarif_df[RULE_ID].apply(lambda rule_id: ",".join(rule_map.get(rule_id, "")))
+            sarif_df[CWES] = sarif_df[RULE_ID].apply(lambda rule_id: ",".join(sorted(rule_map.get(rule_id, ""))))
     else:
         print("No tools, no rules!")
 
@@ -164,70 +164,12 @@ def sarif_to_df(file_path: Path) -> DataFrame:
             sarif_df[col] = ""
 
     return sarif_df[COLUMNS].copy()
-    
-@dataclass
-class Metrics:
-    tool: str
-    loc_scanned: int
-    total_issues: int
-    num_files_with_issues: int
-    num_critical_issues: int
-    num_high_issues: int
-    num_medium_issues: int
-    num_top_25: int
-    num_unique_cwes: int
+
 
 def get_unique_cwes(df: DataFrame) -> set[str]:
     cwe_list = ",".join(filter(lambda x: x is not None and len(x) > 0, list(df['CWEs'].unique()))).split(",")
     return set([cwe for cwe in cwe_list if cwe != '' and cwe is not None])
 
-# def print_sarif_metrics(sarif_file: Path, verbose=True):
-
-#     sarif_df = sarif_to_df(sarif_file)
-#     total_issues = len(sarif_df)
-#     tool = sarif_df['tool'].unique()[0]
-#     num_critical = len(sarif_df[ sarif_df[SEVERITY] == "CRITICAL" ])
-#     num_high = len(sarif_df[ sarif_df[SEVERITY] == "HIGH" ])
-#     num_medium = len(sarif_df[ sarif_df[SEVERITY] == "MEDIUM" ])
-#     num_low = len(sarif_df[ sarif_df[SEVERITY] == "LOW" ])
-#     num_top_25 = len(sarif_df[ sarif_df[IN_TOP_25] == True ])
-
-#     unique_cwes = get_unique_cwes(sarif_df)
-#     num_unique_cwes = len(unique_cwes)
-
-#     num_unique_files = len(sarif_df['filename'].unique())
-
-#     columns = [
-#         "Tool",
-#         "TotalIssues",
-#         "Critical",
-#         "High",
-#         "Medium",
-#         "Low",
-#         "Top25",
-#         "UniqueCWEs",
-#         "UniqueFiles"
-#     ]
-#     data = [ str(c) for c in (
-#         tool,
-#         total_issues,
-#         num_critical,
-#         num_high,
-#         num_medium,
-#         num_low,
-#         num_top_25,
-#         num_unique_cwes,
-#         num_unique_files
-#     ) ]
-
-#     if verbose:
-#         columns.append("CWEs")
-#         data.append(",".join(unique_cwes))
-
-#     header_row = "^".join(columns)
-#     data_row = "^".join(data)
-
-#     print(f"{header_row}\n{data_row}")
     
 def sarif_to_csv(sarif_file: Path):
     with open(sarif_file, 'r', encoding='utf-8', errors='ignore') as f:
