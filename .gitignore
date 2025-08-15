@@ -1,10 +1,12 @@
 scratch.txt
 archive/
 reports/*.csv
-sarif_files/*.sarif
+**/*.sarif
 sarif_files/*.json
 fod_xml_files/*.xml
 FoD_Checkmarx_Reconciliation.ipynb
+**/*.zip
+
 
 venv/
 **/*.csv

@@ -5,6 +5,25 @@
  - Activate it by running  `. ./venv/Scripts/activate` or `. ./venv/bin/activate`
  - Run `python -m pip install pandas` 
 
+## Generate Metrics
+Output CSV-formatted metrics including counts of findings by severity and counts of CWEs
+```sh
+python sarif_metrics.py sast_results.sarif
+```
+Save metrics from many SARIF files to a CSV:
+```sh
+python sarif_metrics *.sarif > sast_comparison.csv
+```
+Table-format the metrics for text output
+```sh
+python sarif_metrics *.sarif | column -t -s'^'
+# outputs
+File                Tool      TotalIssues  Critical  High  Medium  Low  Top25  UniqueCWEs  UniqueFiles
+sast_report2.sarif  SnykCode  10           1         2     3       4    8      5           113
+sast_report2.sarif  SnykCode  10           2         4     6       8    9      6           123
+```
+
+
 ## Generate Reports
  - Put sarif files in the `sarif_files/` directory
  - Run `./run_reports.sh`
