@@ -6,7 +6,8 @@ sarif_files/*.json
 fod_xml_files/*.xml
 FoD_Checkmarx_Reconciliation.ipynb
 **/*.zip
-
+**/*.docx
+**/*.png
 
 venv/
 **/*.csv
